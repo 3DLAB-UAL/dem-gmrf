@@ -1,2 +1,21 @@
 # dem-gmrf
-Digital Elevation Models (DEM) with Gaussian Markov Random Fields (GMRF)
+An application for generating Digital Elevation Models (DEM) with Gaussian Markov Random Fields (GMRF). Works on Windows, GNU/Linux and Mac OS.
+
+**References:**
+  * F.J. Aguilar, M. Aguilar, J.L. Blanco, A. Nemmaoui, "Analysis and Validation of Grid DEM Generation Based on Gaussian Markov Random Field (GMRF)", ISPRS Congress, Praga, 2016.
+
+# Installing
+
+*  Windows binaries:
+  * (Write me!)
+*  Building from sources requires:
+  * A C++ compiler: GCC, clang, Visual C++ 2012 or above recommended.
+  * [MRPT](www.mrpt.org) >= 1.4.0
+
+# Usage
+
+* Show all available parameters: 
+
+        dem-gmrf --help
+
+

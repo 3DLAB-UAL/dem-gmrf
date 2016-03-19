@@ -10,7 +10,7 @@ if(COMMAND cmake_policy)
 	endif()
 endif()
 
-SET(EXECUTABLE_OUTPUT_PATH "${CMAKE_BINARY_DIRECTORY}/bin")
+SET(EXECUTABLE_OUTPUT_PATH "${CMAKE_BINARY_DIR}/bin")
 
 #  See: http://www.mrpt.org/Libraries
 FIND_PACKAGE(MRPT REQUIRED maps;gui)

@@ -41,6 +41,11 @@ TCLAP::ValueArg<double>       arg_checkpoints_ratio("c","checkpoint-ratio",
 	"Ratio (1.0=all,0.0=none) of data points to use as checkpoints. "
 	"They will not be inserted in the DEM. (Default=0.01)",false,0.01,"0.01",cmd);
 
+TCLAP::ValueArg<double>       arg_std_prior("","std-prior","Standard deviation of the prior constraints (`smoothness` or `tolerance`of the terrain) [meters]",false,1.0,"1.0",cmd);
+TCLAP::ValueArg<double>       arg_std_observations("","std-obs","Default standard deviation of each XYZ point observation [meters]",false,0.20,"0.20",cmd);
+
+TCLAP::SwitchArg              arg_skip_variance("","skip-variance", "Skip variance estimation",cmd);
+
 int dem_gmrf_main(int argc, char **argv)
 {
 	if (!cmd.parse( argc, argv )) // Parse arguments:
@@ -56,6 +61,7 @@ int dem_gmrf_main(int argc, char **argv)
 
 	const std::string sDataFile = arg_in_file.getValue();
 	ASSERT_FILE_EXISTS_(sDataFile);
+	const string sPrefix = arg_out_prefix.getValue();
 
 	printf("\n[1] Loading `%s`...\n", sDataFile.c_str());
 	timlog.enter("1.load_dataset");
@@ -125,16 +131,24 @@ int dem_gmrf_main(int argc, char **argv)
 
 	const double RESOLUTION = arg_dem_resolution.getValue();
 
-	mrpt::maps::CHeightGridMap2D_MRF  dem_map(
-		CRandomFieldGridMap2D::mrGMRF_SD /*map type*/,
-		minx,maxx,
-		miny,maxy,
-		RESOLUTION /* resolution */
-		);
+	mrpt::maps::CHeightGridMap2D_MRF  dem_map( CRandomFieldGridMap2D::mrGMRF_SD /*map type*/, 0,1, 0,1, 0.5, false /* run_first_map_estimation_now */); // dummy initial size
+	
+	// Set map params:
+	dem_map.insertionOptions.GMRF_lambdaPrior = 1.0/ mrpt::utils::square( arg_std_prior.getValue() );
+	dem_map.insertionOptions.GMRF_lambdaObs   = 1.0/ mrpt::utils::square( arg_std_observations.getValue() );
+	dem_map.insertionOptions.GMRF_skip_variance = arg_skip_variance.isSet();
+
+	// Resize to actual map extension:
+	{
+		TRandomFieldCell def(0,0); // mean, std
+		dem_map.setSize(minx,maxx,miny,maxy,RESOLUTION,&def);
+	}
+
 	timlog.leave("4.dem_map_init");
 	printf("[4] Done.\n");
 
 	dem_map.enableVerbose(true);
+	dem_map.ENABLE_GMRF_PROFILER = true;
 
 	// ---------------
 	printf("\n[5] Inserting %u points in DEM map...\n",(unsigned)N_insert_pts);
@@ -153,7 +167,7 @@ int dem_gmrf_main(int argc, char **argv)
 	printf("[5] Done.\n");
 
 	// ---------------
-	printf("\n[6] Running GMRF estimator...\n");
+	printf("\n[6] Running GMRF estimator (cell count=%e)...\n",(double)(dem_map.getSizeX()*dem_map.getSizeY()));
 	timlog.enter("6.dem_map_update_gmrf");
 
 	dem_map.updateMapEstimation();
@@ -161,15 +175,33 @@ int dem_gmrf_main(int argc, char **argv)
 	timlog.leave("6.dem_map_update_gmrf");
 	printf("[6] Done.\n");
 
-	MRPT_TODO("Export residuos");
-	MRPT_TODO("Save sep file for checkpoints & used data points");
+	// ---------------
+	if (N_chk_pts)
+	{
+		printf("\n[7] Eval checkpoints...\n");
+		timlog.enter("7.eval_chkpts");
 
+		double rmse=0;
+		CFileOutputStream  fil_eval_chk( sPrefix + string("_chkpt_errors.txt") );
+		for (size_t k=0;k<N_chk_pts;k++)
+		{
+			const size_t i=pts_indices[k+N_insert_pts];
+
+			double dem_z, dem_std;
+			dem_map.predictMeasurement(raw_xyz(i,0),raw_xyz(i,1), dem_z, dem_std, false);
+
+			fil_eval_chk.printf("%f\n", raw_xyz(i,2) - dem_z );
+			rmse+=mrpt::utils::square(raw_xyz(i,2) - dem_z);
+		}
+		rmse/=N_chk_pts;
+		rmse = std::sqrt(rmse);
+
+		timlog.leave("7.eval_chkpts");
+		printf("[7] Done. rmse = %6.03fm\n", rmse);
+	}
 	// ---------------
 	printf("\n[9] Generate TXT output files...\n");
 	timlog.enter("9.save_points");
-
-	const string sPrefix = arg_out_prefix.getValue();
-	
 	{
 		CFileOutputStream  fil_pts_map( sPrefix + string("_pts_map.txt") );
 		for (size_t k=0;k<N_insert_pts;k++)
@@ -205,6 +237,8 @@ int dem_gmrf_main(int argc, char **argv)
 
 	mrpt::gui::CDisplayWindow3D win("Map",640,480);
 	win.setCameraZoom(maxz-minz);
+	win.setMinRange(0.1);
+	win.setMaxRange(1e7);
 	mrpt::opengl::COpenGLScenePtr &scene = win.get3DSceneAndLock();
 	scene->insert( glObj_mean );
 	//scene->insert( glObj_var );

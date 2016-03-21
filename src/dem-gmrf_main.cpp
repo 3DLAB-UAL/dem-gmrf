@@ -18,6 +18,7 @@
 #include <mrpt/utils/round.h>
 #include <mrpt/utils/CFileOutputStream.h>
 #include <mrpt/math/ops_containers.h>
+#include <mrpt/math/ops_vectors.h>
 #include <algorithm> // std::random_shuffle
 #include <ctime>     // std::time
 #include <cstdlib>   // std::rand, std::srand
@@ -45,6 +46,9 @@ TCLAP::ValueArg<double>       arg_std_prior("","std-prior","Standard deviation o
 TCLAP::ValueArg<double>       arg_std_observations("","std-obs","Default standard deviation of each XYZ point observation [meters]",false,0.20,"0.20",cmd);
 
 TCLAP::SwitchArg              arg_skip_variance("","skip-variance", "Skip variance estimation",cmd);
+TCLAP::SwitchArg              arg_no_gui("","no-gui", "Do not show the graphical window with the 3D visualization at end.",cmd);
+
+void do_residuals_stats(const Eigen::VectorXd & r, Eigen::VectorXd &stats, std::string & file_hdr);
 
 int dem_gmrf_main(int argc, char **argv)
 {
@@ -181,23 +185,38 @@ int dem_gmrf_main(int argc, char **argv)
 		printf("\n[7] Eval checkpoints...\n");
 		timlog.enter("7.eval_chkpts");
 
-		double rmse=0;
-		CFileOutputStream  fil_eval_chk( sPrefix + string("_chkpt_errors.txt") );
+		Eigen::VectorXd  residuals_NN(N_chk_pts), residuals_Bi(N_chk_pts);
+
 		for (size_t k=0;k<N_chk_pts;k++)
 		{
 			const size_t i=pts_indices[k+N_insert_pts];
 
-			double dem_z, dem_std;
-			dem_map.predictMeasurement(raw_xyz(i,0),raw_xyz(i,1), dem_z, dem_std, false);
+			// Neirest neighbor:
+			double dem_z_NN, dem_std_NN;
+			dem_map.predictMeasurement(raw_xyz(i,0),raw_xyz(i,1), dem_z_NN, dem_std_NN, false /* sensor normalization */, CRandomFieldGridMap2D::gimNearest);
+			residuals_NN[k] = raw_xyz(i,2) - dem_z_NN;
 
-			fil_eval_chk.printf("%f\n", raw_xyz(i,2) - dem_z );
-			rmse+=mrpt::utils::square(raw_xyz(i,2) - dem_z);
+			// Bilinear interp:
+			double dem_z_Bi, dem_std_Bi;
+			dem_map.predictMeasurement(raw_xyz(i,0),raw_xyz(i,1), dem_z_Bi, dem_std_Bi, false /* sensor normalization */, CRandomFieldGridMap2D::gimBilinear);
+			residuals_Bi[k] = raw_xyz(i,2) - dem_z_Bi;
 		}
-		rmse/=N_chk_pts;
-		rmse = std::sqrt(rmse);
+
+		// Residuals:
+		residuals_NN.saveToTextFile( sPrefix + string("_chkpt_residuals_NN.txt") );
+		residuals_Bi.saveToTextFile( sPrefix + string("_chkpt_residuals_Bi.txt") );
+
+		// Residuals stats:
+		std::string stats_hdr;
+		Eigen::VectorXd residuals_NN_stats,residuals_Bi_stats;
+		do_residuals_stats(residuals_NN, residuals_NN_stats,stats_hdr);
+		do_residuals_stats(residuals_Bi, residuals_Bi_stats,stats_hdr);
+
+		residuals_NN_stats.saveToTextFile( sPrefix + string("_chkpt_residuals_NN_stats.txt"), MATRIX_FORMAT_ENG, false, stats_hdr );
+		residuals_Bi_stats.saveToTextFile( sPrefix + string("_chkpt_residuals_Bi_stats.txt"), MATRIX_FORMAT_ENG, false, stats_hdr );
 
 		timlog.leave("7.eval_chkpts");
-		printf("[7] Done. rmse = %6.03fm\n", rmse);
+		printf("[7] Done.\n");
 	}
 	// ---------------
 	printf("\n[9] Generate TXT output files...\n");
@@ -226,29 +245,54 @@ int dem_gmrf_main(int argc, char **argv)
 	printf("[9] Done.\n");
 
 #if MRPT_HAS_WXWIDGETS
-	registerClass( CLASS_ID( CSetOfObjects ) );
+	if (!arg_no_gui.isSet())
+	{
+		registerClass( CLASS_ID( CSetOfObjects ) );
 
-	// 3D view:
-	mrpt::opengl::CSetOfObjectsPtr glObj_mean = mrpt::opengl::CSetOfObjects::Create();
-	//mrpt::opengl::CSetOfObjectsPtr glObj_var  = mrpt::opengl::CSetOfObjects::Create();
-	dem_map.getAs3DObject( glObj_mean );//, glObj_var );
-	glObj_mean->setLocation( -0.5*(minx+maxx), -0.5*(miny+maxy), -0.5*(minz+maxz) );
-	//glObj_var->setLocation( -0.5*(minx+maxx), -0.5*(miny+maxy), -0.5*(minz+maxz) );
+		// 3D view:
+		mrpt::opengl::CSetOfObjectsPtr glObj_mean = mrpt::opengl::CSetOfObjects::Create();
+		mrpt::opengl::CSetOfObjectsPtr glObj_var  = mrpt::opengl::CSetOfObjects::Create();
+		dem_map.getAs3DObject( glObj_mean, glObj_var );
+		glObj_mean->setLocation( -0.5*(minx+maxx), -0.5*(miny+maxy), -0.5*(minz+maxz) );
+		glObj_var->setLocation( -0.5*(minx+maxx) + 1.1*(maxx-minx), -0.5*(miny+maxy), -0.5*(minz+maxz) );
 
-	mrpt::gui::CDisplayWindow3D win("Map",640,480);
-	win.setCameraZoom(maxz-minz);
-	win.setMinRange(0.1);
-	win.setMaxRange(1e7);
-	mrpt::opengl::COpenGLScenePtr &scene = win.get3DSceneAndLock();
-	scene->insert( glObj_mean );
-	//scene->insert( glObj_var );
-	win.unlockAccess3DScene();
-	win.repaint();
+		mrpt::gui::CDisplayWindow3D win("Map",640,480);
+		win.setCameraZoom( mrpt::utils::max3( maxz-minz, maxx-minx, maxy-miny) );
+		win.setMinRange(0.1);
+		win.setMaxRange(1e7);
+		mrpt::opengl::COpenGLScenePtr &scene = win.get3DSceneAndLock();
+		scene->insert( glObj_mean );
+		//scene->insert( glObj_var );
+		win.unlockAccess3DScene();
+		win.repaint();
 
-	win.waitForKey();
+		win.waitForKey();
+	}
 #endif
 	return 0;
 }
+
+void do_residuals_stats(const Eigen::VectorXd & r, Eigen::VectorXd &stats, std::string & file_hdr)
+{
+	file_hdr = "% MAX_ABS_ERR   MIN_ABS_ERR   AVERAGE_ERR   STD_DEV   RMSE    MEDIAN\n";
+
+	const size_t N = r.size();
+	stats.resize(6);
+	if (!N) return;
+
+	stats[0] = r.maxCoeff();
+	stats[1] = r.minCoeff();
+
+	mrpt::math::meanAndStd(r, stats[2], stats[3]);
+	// RMSE:
+	stats[4] = std::sqrt(  r.array().square().sum() / N );
+	
+	std::vector<double> v(N);
+	for (size_t i=0;i<N;i++) v[i]=r[i];
+	nth_element(v.begin(), v.begin()+(N/2), v.end());
+	stats[5] = v[N/2];
+}
+
 
 int main(int argc, char **argv)
 {

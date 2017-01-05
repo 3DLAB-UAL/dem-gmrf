@@ -61,8 +61,6 @@ int dem_gmrf_main(int argc, char **argv)
 	printf(" Powered by %s - BUILD DATE %s\n", MRPT_getVersion().c_str(), MRPT_getCompilationDate().c_str());
 	printf("-------------------------------------------------------------------\n");
 
-	MRPT_TODO("Tipos de ficheros: 3 cols vs 4 cols; Z: 1e+38 error en raster (preguntar no data)");
-
 	const std::string sDataFile = arg_in_file.getValue();
 	ASSERT_FILE_EXISTS_(sDataFile);
 	const string sPrefix = arg_out_prefix.getValue();
@@ -77,7 +75,13 @@ int dem_gmrf_main(int argc, char **argv)
 
 	timlog.leave("1.load_dataset");
 	ASSERT_(nCols>=3);
-	
+
+	// File types: 
+	// * 3 columns: x y z
+	// * 4 columns: x y z stddev 
+	// Z: 1e+38 error en raster (preguntar no data)
+	const bool all_readings_same_stddev = nCols==3;
+
 	// ---------------
 	printf("\n[2] Determining bounding box...\n");
 	timlog.enter("2.bbox");
@@ -152,7 +156,7 @@ int dem_gmrf_main(int argc, char **argv)
 	printf("[4] Done.\n");
 
 	dem_map.enableVerbose(true);
-	dem_map.ENABLE_GMRF_PROFILER = true;
+	dem_map.enableProfiler(true);
 
 	// ---------------
 	printf("\n[5] Inserting %u points in DEM map...\n",(unsigned)N_insert_pts);
@@ -163,9 +167,20 @@ int dem_gmrf_main(int argc, char **argv)
 		const size_t i=pts_indices[k];
 		const mrpt::math::TPoint3D pt( raw_xyz(i,0),raw_xyz(i,1),raw_xyz(i,2) );
 		
-		MRPT_TODO("SIGMAS diferentes!!");
+		double reading_stddev;
+		if (all_readings_same_stddev) {
+			reading_stddev = arg_std_observations.getValue();
+		}
+		else {
+			reading_stddev = raw_xyz(i, 3);
+		}
 
-		dem_map.insertIndividualReading(pt.z, TPoint2D(pt.x,pt.y), false /* do not update map now */ );
+		dem_map.insertIndividualReading(
+			pt.z, 
+			TPoint2D(pt.x,pt.y), 
+			false /* do not update map now */,
+			true /*time invariant*/, 
+			reading_stddev );
 	}
 	timlog.leave("5.dem_map_insert_points");
 	printf("[5] Done.\n");
